@@ -1,0 +1,6 @@
+src/generated
+src/components/ui
+src/hooks/use-mobile.ts
+prisma/migrations
+.next
+node_modules
