@@ -4,6 +4,7 @@ import { AnimatedSparkles } from "@/components/brand/animated-icons";
 import {
   IconAlertTriangle,
   IconBrandGoogleDrive,
+  IconLayoutKanban,
   IconMicrophone,
   IconPencil,
   IconUpload,
@@ -166,6 +167,7 @@ export function CaptureView() {
 
 function CaptureDetail({ captureId }: { captureId: string }) {
   const trpc = useTRPC();
+  const router = useRouter();
   const queryClient = useQueryClient();
   const capture = useQuery({
     ...trpc.capture.get.queryOptions({ captureId }),
@@ -176,6 +178,19 @@ function CaptureDetail({ captureId }: { captureId: string }) {
   const retry = useMutation(
     trpc.capture.retry.mutationOptions({
       onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.capture.get.queryKey({ captureId }) }),
+      onError: (e) => toast.error(errorMessage(e)),
+    }),
+  );
+
+  const addAll = useMutation(
+    trpc.capture.addAllToMyBoard.mutationOptions({
+      onSuccess: ({ added, boardId }) => {
+        void queryClient.invalidateQueries({ queryKey: trpc.capture.get.queryKey({ captureId }) });
+        void queryClient.invalidateQueries({ queryKey: trpc.board.get.queryKey() });
+        toast.success(`${added} ${added === 1 ? "to-do" : "to-dos"} added to My board`, {
+          action: boardId ? { label: "Open", onClick: () => router.push(`/boards/${boardId}`) } : undefined,
+        });
+      },
       onError: (e) => toast.error(errorMessage(e)),
     }),
   );
@@ -194,6 +209,11 @@ function CaptureDetail({ captureId }: { captureId: string }) {
     <section className="min-w-0 space-y-6">
       <div>
         <h2 className="text-xl font-bold">{data.title ?? "Capture"}</h2>
+        {data.toMyBoard && (
+          <Badge variant="secondary" className="mt-1">
+            <IconLayoutKanban /> Action items go straight to My board
+          </Badge>
+        )}
         <details className="mt-2 rounded-xl bg-muted/50 p-3 text-sm">
           <summary className="cursor-pointer text-muted-foreground">What was said</summary>
           <p className="mt-2 whitespace-pre-wrap">{data.rawText}</p>
@@ -221,9 +241,15 @@ function CaptureDetail({ captureId }: { captureId: string }) {
         </p>
       ) : (
         <div className="space-y-3">
-          <h3 className="font-heading font-semibold">
-            {pending.length} suggested {pending.length === 1 ? "card" : "cards"}
-          </h3>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="font-heading font-semibold">
+              {pending.length} suggested {pending.length === 1 ? "card" : "cards"}
+            </h3>
+            <Button size="sm" onClick={() => addAll.mutate({ captureId })} disabled={addAll.isPending}>
+              {addAll.isPending ? <Spinner /> : <IconLayoutKanban />}
+              Add all to My board
+            </Button>
+          </div>
           {pending.map((s) => (
             <SuggestionCard
               key={s.id}

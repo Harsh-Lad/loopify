@@ -15,3 +15,6 @@ function handler(req: Request) {
 }
 
 export { handler as GET, handler as POST };
+
+// Capture processing (an AI call) runs after the response, inside this function's time budget.
+export const maxDuration = 60;

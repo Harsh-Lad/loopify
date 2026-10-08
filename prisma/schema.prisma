@@ -511,17 +511,21 @@ enum SuggestionStatus {
 }
 
 model Capture {
-  id          String        @id @default(cuid())
-  orgId       String
-  userId      String
-  source      CaptureSource @default(TEXT)
-  title       String?
-  rawText     String
-  audioUrl    String?
-  status      CaptureStatus @default(PENDING)
-  error       String?
-  processedAt DateTime?
-  createdAt   DateTime      @default(now())
+  id           String        @id @default(cuid())
+  orgId        String
+  userId       String
+  source       CaptureSource @default(TEXT)
+  title        String?
+  rawText      String
+  audioUrl     String?
+  status       CaptureStatus @default(PENDING)
+  /// Skip review: once processed, every action item becomes a to-do on the person's own board.
+  toMyBoard    Boolean       @default(false)
+  /// When a worker claimed it. A claim older than a couple of minutes is stale and can be retaken.
+  processingAt DateTime?
+  error        String?
+  processedAt  DateTime?
+  createdAt    DateTime      @default(now())
 
   org         Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)

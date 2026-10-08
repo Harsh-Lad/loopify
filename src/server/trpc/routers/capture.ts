@@ -5,11 +5,12 @@ import { isAiConfigured } from "@/server/ai";
 import { listCaptureFiles, readCaptureFile } from "@/server/google/drive-docs";
 import { GoogleNotConnectedError, isGoogleConfigured } from "@/server/google/oauth";
 import { dispatchCaptureCreated } from "@/server/inngest/dispatch";
+import { STALE_CLAIM_MS } from "@/server/services/capture";
 import { between } from "@/server/services/boards";
 import { endOfColumn } from "@/server/services/cards";
 import { getOrCreateDayPlan } from "@/server/services/day";
 import { recordEvent } from "@/server/services/events";
-import { autoMirrorOnAssign } from "@/server/services/personal";
+import { addCaptureToPersonalBoard, autoMirrorOnAssign } from "@/server/services/personal";
 import { assertAssignable, assertOrgUser, getBoardOrThrow } from "@/server/trpc/guards";
 import { createTRPCRouter, orgProcedure } from "@/server/trpc/init";
 
@@ -20,6 +21,22 @@ function googleError(error: unknown): never {
   }
   const message = error instanceof Error ? error.message : "Google didn't answer. Try again.";
   throw new TRPCError({ code: "BAD_REQUEST", message });
+}
+
+/**
+ * Self-healing: anything still waiting long after it should have finished
+ * (a worker that timed out, an old queued job) is processed again. The claim
+ * inside processCapture makes this safe to call on every poll.
+ */
+function rescueStuck(captures: { id: string; status: string; createdAt: Date; processingAt: Date | null }[]) {
+  const cutoff = Date.now() - STALE_CLAIM_MS;
+  for (const c of captures) {
+    if (c.status !== "PENDING" && c.status !== "PROCESSING") continue;
+    const since = (c.processingAt ?? c.createdAt).getTime();
+    if (since < cutoff || (c.status === "PENDING" && !c.processingAt && c.createdAt.getTime() < Date.now() - 20_000)) {
+      void dispatchCaptureCreated(c.id);
+    }
+  }
 }
 
 export const captureRouter = createTRPCRouter({
@@ -54,7 +71,7 @@ export const captureRouter = createTRPCRouter({
 
   /** Reads a Drive file and captures it as a meeting. */
   importDriveFile: orgProcedure
-    .input(z.object({ fileId: z.string().min(1) }))
+    .input(z.object({ fileId: z.string().min(1), toMyBoard: z.boolean().default(false) }))
     .output(z.object({ id: z.string(), status: z.string() }))
     .mutation(async ({ ctx, input }) => {
       const file = await readCaptureFile(ctx.org.id, ctx.user.id, input.fileId).catch(googleError);
@@ -66,6 +83,7 @@ export const captureRouter = createTRPCRouter({
           rawText: file.text,
           title: file.name.slice(0, 120),
           source: file.kind === "transcript" ? "MEETING" : "TEXT",
+          toMyBoard: input.toMyBoard,
         },
       });
       await dispatchCaptureCreated(capture.id);
@@ -88,12 +106,21 @@ export const captureRouter = createTRPCRouter({
         text: z.string().trim().min(3, "Write a little more").max(60_000),
         title: z.string().trim().max(120).optional(),
         source: z.enum(["TEXT", "VOICE", "MEETING", "EMAIL", "MOBILE"]).default("TEXT"),
+        /** Skip review: action items go straight to your personal board as to-dos. */
+        toMyBoard: z.boolean().default(false),
       }),
     )
     .output(z.object({ id: z.string(), status: z.string() }))
     .mutation(async ({ ctx, input }) => {
       const capture = await ctx.db.capture.create({
-        data: { orgId: ctx.org.id, userId: ctx.user.id, rawText: input.text, title: input.title, source: input.source },
+        data: {
+          orgId: ctx.org.id,
+          userId: ctx.user.id,
+          rawText: input.text,
+          title: input.title,
+          source: input.source,
+          toMyBoard: input.toMyBoard,
+        },
       });
       await dispatchCaptureCreated(capture.id);
       const fresh = await ctx.db.capture.findUniqueOrThrow({
@@ -103,22 +130,27 @@ export const captureRouter = createTRPCRouter({
       return fresh;
     }),
 
-  list: orgProcedure.input(z.object({ limit: z.number().int().min(1).max(50).default(20) })).query(({ ctx, input }) =>
-    ctx.db.capture.findMany({
-      where: { orgId: ctx.org.id, userId: ctx.user.id },
-      orderBy: { createdAt: "desc" },
-      take: input.limit,
-      select: {
-        id: true,
-        title: true,
-        source: true,
-        status: true,
-        createdAt: true,
-        rawText: true,
-        _count: { select: { suggestions: { where: { status: "PENDING" } } } },
-      },
+  list: orgProcedure
+    .input(z.object({ limit: z.number().int().min(1).max(50).default(20) }))
+    .query(async ({ ctx, input }) => {
+      const captures = await ctx.db.capture.findMany({
+        where: { orgId: ctx.org.id, userId: ctx.user.id },
+        orderBy: { createdAt: "desc" },
+        take: input.limit,
+        select: {
+          id: true,
+          title: true,
+          source: true,
+          status: true,
+          createdAt: true,
+          processingAt: true,
+          rawText: true,
+          _count: { select: { suggestions: { where: { status: "PENDING" } } } },
+        },
+      });
+      rescueStuck(captures);
+      return captures;
     }),
-  ),
 
   get: orgProcedure.input(z.object({ captureId: z.string() })).query(async ({ ctx, input }) => {
     const capture = await ctx.db.capture.findFirst({
@@ -126,6 +158,7 @@ export const captureRouter = createTRPCRouter({
       include: { suggestions: { orderBy: [{ status: "asc" }, { confidence: "desc" }] } },
     });
     if (!capture) throw new TRPCError({ code: "NOT_FOUND" });
+    rescueStuck([capture]);
     return capture;
   }),
 
@@ -134,6 +167,10 @@ export const captureRouter = createTRPCRouter({
       where: { id: input.captureId, orgId: ctx.org.id, userId: ctx.user.id },
     });
     if (!capture) throw new TRPCError({ code: "NOT_FOUND" });
+    await ctx.db.capture.update({
+      where: { id: capture.id },
+      data: { status: "PENDING", processingAt: null, error: null },
+    });
     await dispatchCaptureCreated(capture.id);
     return { retried: true };
   }),
@@ -231,6 +268,16 @@ export const captureRouter = createTRPCRouter({
         return { cardId: card.id, key: `${board.key}-${card.number}` };
       });
     }),
+
+  /** Every pending suggestion of a capture becomes a to-do on your personal board. */
+  addAllToMyBoard: orgProcedure.input(z.object({ captureId: z.string() })).mutation(async ({ ctx, input }) => {
+    const capture = await ctx.db.capture.findFirst({
+      where: { id: input.captureId, orgId: ctx.org.id, userId: ctx.user.id },
+      select: { id: true },
+    });
+    if (!capture) throw new TRPCError({ code: "NOT_FOUND", message: "Capture not found." });
+    return ctx.db.$transaction((tx) => addCaptureToPersonalBoard(tx, capture.id));
+  }),
 
   dismiss: orgProcedure.input(z.object({ suggestionId: z.string() })).mutation(async ({ ctx, input }) => {
     const updated = await ctx.db.suggestedCard.updateMany({

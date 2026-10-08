@@ -29,6 +29,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -63,6 +65,22 @@ export function QuickCaptureDialog() {
     if (captureOpen) setTab(captureTab);
   }
 
+  const [toMyBoard, setToMyBoardState] = useState(() => {
+    try {
+      return typeof window !== "undefined" && window.localStorage.getItem("loopify.captureToMyBoard") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const setToMyBoard = (value: boolean) => {
+    setToMyBoardState(value);
+    try {
+      window.localStorage.setItem("loopify.captureToMyBoard", value ? "1" : "0");
+    } catch {
+      // storage blocked: the switch still works for this session
+    }
+  };
+
   const done = async (capture: { id: string; status: string }) => {
     await queryClient.invalidateQueries({ queryKey: trpc.capture.list.queryKey() });
     setCaptureOpen(false);
@@ -79,7 +97,7 @@ export function QuickCaptureDialog() {
     trpc.capture.create.mutationOptions({ onSuccess: done, onError: (e) => toast.error(errorMessage(e)) }),
   );
   const submit = (text: string, source: Source, title?: string) =>
-    text.trim().length >= 3 && create.mutate({ text, source, title });
+    text.trim().length >= 3 && create.mutate({ text, source, title, toMyBoard });
 
   return (
     <Dialog open={captureOpen} onOpenChange={setCaptureOpen}>
@@ -119,9 +137,15 @@ export function QuickCaptureDialog() {
             <UploadTab pending={create.isPending} onSubmit={submit} />
           </TabsContent>
           <TabsContent value="drive" className="pt-3">
-            <DriveTab onImported={done} />
+            <DriveTab onImported={done} toMyBoard={toMyBoard} />
           </TabsContent>
         </Tabs>
+        <div className="flex items-center gap-2 rounded-xl bg-muted/60 px-3 py-2">
+          <Switch id="capture-to-my-board" checked={toMyBoard} onCheckedChange={setToMyBoard} />
+          <Label htmlFor="capture-to-my-board" className="text-sm font-normal">
+            Skip review: add action items straight to <span className="font-medium">My board</span> as to-dos
+          </Label>
+        </div>
       </DialogContent>
     </Dialog>
   );
@@ -400,7 +424,13 @@ function UploadTab({
 
 const KIND_ICON = { transcript: IconUsers, doc: IconFileText, sheet: IconTable, text: IconFileText } as const;
 
-function DriveTab({ onImported }: { onImported: (c: { id: string; status: string }) => void }) {
+function DriveTab({
+  onImported,
+  toMyBoard,
+}: {
+  onImported: (c: { id: string; status: string }) => void;
+  toMyBoard: boolean;
+}) {
   const trpc = useTRPC();
   const sources = useQuery(trpc.capture.sources.queryOptions());
   const [search, setSearch] = useState("");
@@ -487,7 +517,7 @@ function DriveTab({ onImported }: { onImported: (c: { id: string; status: string
                   <button
                     type="button"
                     disabled={importFile.isPending}
-                    onClick={() => importFile.mutate({ fileId: f.id })}
+                    onClick={() => importFile.mutate({ fileId: f.id, toMyBoard })}
                     className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-muted disabled:opacity-60"
                   >
                     <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand">

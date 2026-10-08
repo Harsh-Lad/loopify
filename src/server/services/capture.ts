@@ -4,6 +4,7 @@ import type { Priority } from "@/generated/prisma/client";
 import { localDayKey } from "@/lib/dates";
 import { getAi, isAiConfigured, parseJsonReply } from "@/server/ai";
 import { db } from "@/server/db";
+import { addCaptureToPersonalBoard } from "@/server/services/personal";
 
 const extractionSchema = z.object({
   title: z.string().max(120).optional(),
@@ -80,10 +81,30 @@ function matchMember(hint: string | null | undefined, members: { id: string; nam
   return partial?.id ?? null;
 }
 
+/** A claim this old means the worker died (timeout, deploy, crash); someone else may retake it. */
+export const STALE_CLAIM_MS = 2 * 60 * 1000;
+
+/**
+ * Atomically takes a capture for processing: fresh (never claimed) or stale
+ * (claimed long ago and never finished). Returns false when someone else has it.
+ */
+async function claimCapture(captureId: string) {
+  const stale = new Date(Date.now() - STALE_CLAIM_MS);
+  const { count } = await db.capture.updateMany({
+    where: {
+      id: captureId,
+      status: { in: ["PENDING", "PROCESSING"] },
+      OR: [{ processingAt: null }, { processingAt: { lt: stale } }],
+    },
+    data: { status: "PROCESSING", processingAt: new Date(), error: null },
+  });
+  return count === 1;
+}
+
 export async function processCapture(captureId: string) {
-  const capture = await db.capture.update({
+  if (!(await claimCapture(captureId))) return;
+  const capture = await db.capture.findUniqueOrThrow({
     where: { id: captureId },
-    data: { status: "PROCESSING", error: null },
     include: { user: { select: { id: true, name: true, timezone: true } } },
   });
 
@@ -125,30 +146,47 @@ export async function processCapture(captureId: string) {
       extraction = heuristicExtract(capture.rawText);
     }
 
-    await db.$transaction([
-      db.suggestedCard.deleteMany({ where: { captureId, status: "PENDING" } }),
-      db.suggestedCard.createMany({
-        data: extraction.suggestions.map((s) => ({
-          captureId,
-          title: s.title,
-          description: s.description ?? null,
-          assigneeHint: s.assignee ?? null,
-          suggestedUserId: matchMember(s.assignee, people, capture.user.id),
-          suggestedBoardId: boards.find((b) => b.key === s.board)?.id ?? null,
-          dueDate: s.dueDate ? new Date(`${s.dueDate}T00:00:00.000Z`) : null,
-          priority: s.priority as Priority,
-          confidence: s.confidence,
-        })),
-      }),
-      db.capture.update({
-        where: { id: captureId },
-        data: {
-          status: "READY",
-          processedAt: new Date(),
-          title: capture.title ?? extraction.title ?? null,
-        },
-      }),
-    ]);
+    // One transaction: suggestions, the optional to-dos and READY land together, so nobody
+    // ever sees a "ready" capture whose action items are still on their way to the board.
+    const added = await db.$transaction(
+      async (tx) => {
+        await tx.suggestedCard.deleteMany({ where: { captureId, status: "PENDING" } });
+        await tx.suggestedCard.createMany({
+          data: extraction.suggestions.map((s) => ({
+            captureId,
+            title: s.title,
+            description: s.description ?? null,
+            assigneeHint: s.assignee ?? null,
+            suggestedUserId: matchMember(s.assignee, people, capture.user.id),
+            suggestedBoardId: boards.find((b) => b.key === s.board)?.id ?? null,
+            dueDate: s.dueDate ? new Date(`${s.dueDate}T00:00:00.000Z`) : null,
+            priority: s.priority as Priority,
+            confidence: s.confidence,
+          })),
+        });
+        const result = capture.toMyBoard ? await addCaptureToPersonalBoard(tx, captureId) : { added: 0 };
+        await tx.capture.update({
+          where: { id: captureId },
+          data: { status: "READY", processedAt: new Date(), title: capture.title ?? extraction.title ?? null },
+        });
+        return result.added;
+      },
+      { timeout: 30_000 },
+    );
+
+    if (added > 0) {
+      await db.notification
+        .create({
+          data: {
+            orgId: capture.orgId,
+            userId: capture.userId,
+            type: "capture",
+            title: `${added} ${added === 1 ? "to-do" : "to-dos"} from "${capture.title ?? extraction.title ?? "your capture"}" added to My board`,
+            link: "/my-board",
+          },
+        })
+        .catch(() => undefined);
+    }
   } catch (error) {
     await db.capture.update({
       where: { id: captureId },

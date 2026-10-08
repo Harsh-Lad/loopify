@@ -139,3 +139,59 @@ export async function autoMirrorOnAssign(tx: Tx, card: Card) {
   if (board?.ownerId) return;
   await mirrorCard(tx, member.user, card);
 }
+
+/**
+ * Turns every pending suggestion of a capture into a to-do in the capture
+ * owner's personal Inbox, keeping due date, priority and notes. Returns how
+ * many cards were made. Safe to call twice: handled suggestions are skipped.
+ */
+export async function addCaptureToPersonalBoard(tx: Tx, captureId: string) {
+  const capture = await tx.capture.findUniqueOrThrow({
+    where: { id: captureId },
+    include: {
+      user: { select: { id: true, name: true } },
+      suggestions: { where: { status: "PENDING" }, orderBy: { createdAt: "asc" } },
+    },
+  });
+  if (!capture.suggestions.length) return { added: 0, boardId: null as string | null };
+
+  const board = await ensurePersonalBoard(tx, capture.orgId, capture.user);
+  const column = await columnFor(tx, board.id, "TODO");
+  let position = await endOfMixedColumn(tx, column.id);
+
+  for (const suggestion of capture.suggestions) {
+    const { cardSeq } = await tx.board.update({ where: { id: board.id }, data: { cardSeq: { increment: 1 } } });
+    const card = await tx.card.create({
+      data: {
+        orgId: capture.orgId,
+        boardId: board.id,
+        columnId: column.id,
+        number: cardSeq,
+        title: suggestion.title,
+        descriptionText:
+          [suggestion.description, suggestion.assigneeHint ? `Mentioned: ${suggestion.assigneeHint}` : null]
+            .filter(Boolean)
+            .join("\n\n") || null,
+        assigneeId: capture.userId,
+        reporterId: capture.userId,
+        priority: suggestion.priority,
+        dueDate: suggestion.dueDate,
+        position,
+        source: "CAPTURE",
+        captureId: capture.id,
+      },
+    });
+    position += 1000;
+    await recordEvent(tx, {
+      orgId: capture.orgId,
+      boardId: board.id,
+      cardId: card.id,
+      actorId: capture.userId,
+      type: "CREATED",
+      toColumnId: column.id,
+      payload: { title: card.title, source: "capture" },
+    });
+    await tx.suggestedCard.update({ where: { id: suggestion.id }, data: { status: "ACCEPTED", cardId: card.id } });
+  }
+  return { added: capture.suggestions.length, boardId: board.id };
+}
