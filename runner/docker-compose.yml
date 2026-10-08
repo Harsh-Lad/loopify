@@ -1,0 +1,13 @@
+services:
+  meet-runner:
+    build: .
+    env_file: .env
+    volumes:
+      - ./secrets:/secrets:ro   # google-state.json from `npm run login` (optional: without it the bot joins as a guest)
+      - audio:/data/audio
+    shm_size: "1gb"             # Chromium crashes on Docker's default 64 MB
+    restart: unless-stopped
+    stop_grace_period: 3m       # lets an in-progress meeting finish uploading
+
+volumes:
+  audio:

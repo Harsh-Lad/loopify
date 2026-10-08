@@ -19,6 +19,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect } from "react";
 import { toast } from "sonner";
 import { useShell } from "@/components/app/shell-context";
+import { MeetingBotPanel } from "@/components/capture/meeting-bot-panel";
 import { SuggestionCard } from "@/components/capture/suggestion-card";
 import { PageBody, PageHeader } from "@/components/common/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -92,6 +93,8 @@ export function CaptureView() {
           </button>
         ))}
       </div>
+
+      <MeetingBotPanel />
 
       {status.data && !status.data.aiConfigured && (
         <Alert className="mt-6">

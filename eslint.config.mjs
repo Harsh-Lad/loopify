@@ -16,6 +16,8 @@ const eslintConfig = defineConfig([
     "src/generated/**",
     "src/components/ui/**",
     "src/hooks/use-mobile.ts",
+    // The meeting-bot runner is its own package with its own tsconfig.
+    "runner/**",
   ]),
 ]);
 

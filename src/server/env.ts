@@ -36,6 +36,9 @@ const schema = z.object({
 
   INNGEST_EVENT_KEY: z.string().optional(),
   INNGEST_SIGNING_KEY: z.string().optional(),
+
+  /** Shared secret the meeting-bot runner sends as `x-runner-secret`. */
+  RUNNER_SECRET: z.string().optional(),
 });
 
 export type Env = z.infer<typeof schema>;

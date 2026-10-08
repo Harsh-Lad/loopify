@@ -31,6 +31,8 @@ export type ChatRequest = {
   maxTokens?: number;
   /** Ask the model for a single JSON object as the reply. */
   json?: boolean;
+  /** Constrain the reply to this JSON Schema (structured output). Takes precedence over `json`. */
+  jsonSchema?: { name: string; schema: Record<string, unknown> };
 };
 
 export type ChatResponse = {

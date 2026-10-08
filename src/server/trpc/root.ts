@@ -8,6 +8,7 @@ import { dayRouter } from "@/server/trpc/routers/day";
 import { insightsRouter } from "@/server/trpc/routers/insights";
 import { integrationRouter } from "@/server/trpc/routers/integration";
 import { meRouter } from "@/server/trpc/routers/me";
+import { meetingBotRouter } from "@/server/trpc/routers/meeting-bot";
 import { notificationRouter } from "@/server/trpc/routers/notification";
 import { orgRouter } from "@/server/trpc/routers/org";
 import { reportRouter } from "@/server/trpc/routers/report";
@@ -26,6 +27,7 @@ export const appRouter = createTRPCRouter({
   card: cardRouter,
   day: dayRouter,
   capture: captureRouter,
+  meetingBot: meetingBotRouter,
   report: reportRouter,
   insights: insightsRouter,
   admin: adminRouter,

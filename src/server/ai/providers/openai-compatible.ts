@@ -66,7 +66,11 @@ export class OpenAiCompatibleProvider implements LlmProvider {
       messages: request.messages.map(toWire),
       temperature: request.temperature ?? 0.3,
       ...(request.maxTokens ? { max_tokens: request.maxTokens } : {}),
-      ...(request.json ? { response_format: { type: "json_object" } } : {}),
+      ...(request.jsonSchema
+        ? { response_format: { type: "json_schema", json_schema: { ...request.jsonSchema, strict: true } } }
+        : request.json
+          ? { response_format: { type: "json_object" } }
+          : {}),
       ...(request.tools?.length
         ? {
             tools: request.tools.map((tool) => ({

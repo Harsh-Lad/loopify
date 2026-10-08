@@ -46,6 +46,7 @@ model User {
   invitesSent     OrgInvite[]
   personalBoards  Board[]        @relation("PersonalBoard")
   cardMirrors     CardMirror[]
+  meetingJobs     MeetingJob[]
 }
 
 enum VerificationPurpose {
@@ -112,6 +113,7 @@ model Organization {
   chatSessions  ChatSession[]
   notifications Notification[]
   aiConfig      AiProviderConfig?
+  meetingJobs   MeetingJob[]
 }
 
 model OrgMember {
@@ -159,9 +161,10 @@ model Team {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  members TeamMember[]
-  boards  Board[]
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  members     TeamMember[]
+  boards      Board[]
+  meetingJobs MeetingJob[]
 
   @@unique([orgId, slug])
 }
@@ -334,6 +337,7 @@ model Card {
   customFields    Json       @default("{}")
   source          CardSource @default(MANUAL)
   captureId       String?
+  meetingJobId    String?
   rolloverCount   Int        @default(0)
   completedAt     DateTime?
   archivedAt      DateTime?
@@ -348,6 +352,7 @@ model Card {
   parent   Card?         @relation("Subtasks", fields: [parentId], references: [id], onDelete: Cascade)
   subtasks Card[]        @relation("Subtasks")
   capture  Capture?      @relation(fields: [captureId], references: [id], onDelete: SetNull)
+  meeting  MeetingJob?   @relation(fields: [meetingJobId], references: [id], onDelete: SetNull)
   comments CardComment[]
   events   CardEvent[]
   planned  DayPlanItem[]
@@ -357,6 +362,7 @@ model Card {
   @@index([columnId, position])
   @@index([assigneeId])
   @@index([orgId, updatedAt])
+  @@index([meetingJobId])
 }
 
 /**
@@ -699,4 +705,52 @@ model AiProviderConfig {
   updatedAt DateTime   @updatedAt
 
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────────────────────
+// Meeting bot: the runner joins a Meet, transcribes it, and we turn it into cards
+// ─────────────────────────────────────────────────────────────
+
+model MeetingJob {
+  id              String           @id @default(cuid())
+  orgId           String
+  teamId          String?
+  createdById     String
+  meetUrl         String
+  title           String?
+  attendees       String[] // names, used to assign owners
+  keyterms        String[] // brand and product names to spell correctly
+  startAt         DateTime         @default(now())
+  status          MeetingJobStatus @default(QUEUED)
+  cancelRequested Boolean          @default(false)
+  runnerId        String?
+  error           String?
+  durationSec     Int?
+  language        String?
+  transcript      Json? // [{ speaker, start, end, text }]
+  result          Json? // { title, summary, decisions, actionItems, translations }
+  /// Set once cards were made from the result, so a re-posted transcript never duplicates them.
+  cardsCreatedAt  DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  team      Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  createdBy User         @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  cards     Card[]
+
+  @@index([status, startAt])
+  @@index([orgId, createdAt])
+}
+
+enum MeetingJobStatus {
+  QUEUED
+  CLAIMED
+  JOINING
+  WAITING_ADMIT
+  RECORDING
+  TRANSCRIBING
+  EXTRACTING
+  DONE
+  FAILED
 }
